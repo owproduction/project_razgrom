@@ -8,7 +8,7 @@ from PySide6.QtWidgets import *
 from PySide6.QtCore import *
 from PySide6.QtGui import *
 
-SERVER = "localhost"
+SERVER = "192.168.133.20"
 PORT = 5555
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
