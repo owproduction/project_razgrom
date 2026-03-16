@@ -1,6 +1,9 @@
 FROM python:3.11-slim
+
 WORKDIR /app
+
 COPY . .
-RUN pip install --no-cache-dir
+
 EXPOSE 5555
+
 CMD ["python","server_v3.py"]
