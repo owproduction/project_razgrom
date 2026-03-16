@@ -6,4 +6,4 @@ COPY . .
 
 EXPOSE 5555
 
-CMD ["python","server.py"]
+CMD ["python","server_v3.py"]
