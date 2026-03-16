@@ -2,7 +2,6 @@ import socket
 import threading
 import json
 import sqlite3
-import base64
 from datetime import datetime
 
 HOST = "0.0.0.0"
@@ -51,15 +50,21 @@ server.listen()
 print(f"SERVER STARTED ON {HOST}:{PORT}")
 
 clients = {}  # {username: socket}
-
 lock = threading.Lock()
 
 # -------------------- ФУНКЦИИ --------------------
 def broadcast(to_user, data):
-    """Отправка сообщения конкретному пользователю"""
+    """Отправка сообщения конкретному пользователю в унифицированном формате"""
     if to_user in clients:
         try:
-            clients[to_user].send(json.dumps(data).encode())
+            # Всегда отправляем {"sender": ..., "text": ..., "image": ..., "favorite": ...}
+            message = {
+                "sender": data.get("sender"),
+                "text": data.get("text"),
+                "image": data.get("image"),
+                "favorite": data.get("favorite", 0)
+            }
+            clients[to_user].send(json.dumps(message).encode())
         except:
             pass
 
@@ -101,6 +106,7 @@ def get_favorites(user):
     rows = cursor.fetchall()
     return [{"sender":r[0],"text":r[1],"image":r[2],"favorite":r[3]} for r in rows]
 
+# -------------------- ОБРАБОТКА КЛИЕНТА --------------------
 def handle_client(client_socket):
     username = None
     while True:
@@ -139,13 +145,13 @@ def handle_client(client_socket):
             receiver = data["to"]
             text = data["text"]
             save_message(username, receiver, text=text)
-            broadcast(receiver, {"from":username,"text":text})
+            broadcast(receiver, {"sender": username, "text": text, "image": None, "favorite":0})
 
         elif data["type"]=="image" and username:
             receiver = data["to"]
             image = data["image"]
             save_message(username, receiver, image=image)
-            broadcast(receiver, {"from":username,"image":image})
+            broadcast(receiver, {"sender": username, "text": None, "image": image, "favorite":0})
 
         elif data["type"]=="get_history" and username:
             peer = data["with"]

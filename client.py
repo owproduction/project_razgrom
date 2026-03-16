@@ -1,7 +1,13 @@
-import socket, sys, json, base64, threading
+import socket
+import sys
+import json
+import base64
+import threading
+from datetime import datetime
+
 from PySide6.QtWidgets import *
 from PySide6.QtGui import QTextCursor
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
 
 SERVER = "192.168.133.20"
 PORT = 5555
@@ -19,11 +25,15 @@ QTextBrowser{background:#121212;border:none;}
 
 WELCOME_TEXT = "❝ «Проект Разгром» спасет мир. Наступит ледниковый период для культуры. Искусственно вызванные темные века. «Проект Разгром» вынудит человечество погрузиться в спячку и ограничить свои аппетиты на время, необходимое Земле для восстановления ресурсов. ❞"
 
+# ---------------- SIGNALS ----------------
+class Receiver(QObject):
+    new_message = Signal(dict)  # {"sender":..., "text":..., "image":..., "favorite":...}
+
 # ---------------- LOGIN ----------------
 class Login(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Проект Разгром v3")
+        self.setWindowTitle("Проект Разгром v4")
         self.resize(300,200)
         self.setStyleSheet(STYLE)
         layout = QVBoxLayout()
@@ -47,7 +57,7 @@ class Login(QWidget):
         sock.send(json.dumps(data).encode())
         resp = json.loads(sock.recv(1024).decode())
         if resp["status"]=="ok":
-            self.chat = MessengerV3(self.user.text())
+            self.chat = MessengerV4(self.user.text())
             self.chat.show()
             self.close()
         else:
@@ -62,17 +72,44 @@ class Login(QWidget):
         else:
             QMessageBox.warning(self,"Ошибка","Ник занят")
 
+# ---------------- HISTORY THREAD ----------------
+class HistoryWorker(QThread):
+    finished = Signal(list)
+
+    def __init__(self, sock, user, peer):
+        super().__init__()
+        self.sock = sock
+        self.user = user
+        self.peer = peer
+
+    def run(self):
+        try:
+            data = {"type":"get_history","with":self.peer}
+            self.sock.send(json.dumps(data).encode())
+            resp_bytes = bytearray()
+            while True:
+                chunk = self.sock.recv(4096)
+                if not chunk: break
+                resp_bytes.extend(chunk)
+                if b'"messages"' in resp_bytes:  # простой маркер конца
+                    break
+            resp = json.loads(resp_bytes.decode())
+            self.finished.emit(resp.get("messages",[]))
+        except:
+            self.finished.emit([])
+
 # ---------------- MAIN MESSENGER ----------------
-class MessengerV3(QWidget):
+class MessengerV4(QWidget):
     def __init__(self, username):
         super().__init__()
         self.username = username
-        self.setWindowTitle("Проект Разгром v3")
+        self.setWindowTitle("Проект Разгром v4")
         self.resize(1000,600)
         self.setStyleSheet(STYLE)
+
         layout = QHBoxLayout(self)
 
-        # LEFT PANEL - chats + favorite
+        # LEFT PANEL
         left = QVBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Найти пользователя")
@@ -87,7 +124,7 @@ class MessengerV3(QWidget):
         left.addWidget(self.chat_list)
         left.addWidget(self.favorite_btn)
 
-        # RIGHT PANEL - chat
+        # RIGHT PANEL
         right = QVBoxLayout()
         self.chat_title = QLabel("Чат")
         self.messages = QTextBrowser()
@@ -107,12 +144,18 @@ class MessengerV3(QWidget):
         layout.addLayout(right,3)
 
         self.current_chat = None
+
+        # Сигнал для безопасного обновления GUI
+        self.receiver = Receiver()
+        self.receiver.new_message.connect(self.append_message_from_signal)
+
+        # поток для постоянного получения сообщений
         threading.Thread(target=self.receive_messages, daemon=True).start()
 
-        # показываем приветственное сообщение
+        # приветственное сообщение
         self.messages.append(f"<i>{WELCOME_TEXT}</i>")
 
-    # -------- SEARCH --------
+    # ---------------- SEARCH ----------------
     def search_user(self):
         username = self.search.text()
         if username=="":
@@ -120,19 +163,25 @@ class MessengerV3(QWidget):
         if username not in [self.chat_list.item(i).text() for i in range(self.chat_list.count())]:
             self.chat_list.addItem(username)
 
-    # -------- SELECT CHAT --------
+    # ---------------- SELECT CHAT ----------------
     def select_chat(self, item):
         self.current_chat = item.text()
         self.chat_title.setText("Чат с " + self.current_chat)
         self.messages.clear()
-        # запрос истории
-        data = {"type":"get_history","with":self.current_chat}
-        sock.send(json.dumps(data).encode())
-        resp = json.loads(sock.recv(10000000).decode())
-        for msg in resp.get("messages",[]):
+
+        # запуск потока для истории
+        self.hist_worker = HistoryWorker(sock, self.username, self.current_chat)
+        self.hist_worker.finished.connect(self.load_history)
+        self.hist_worker.start()
+
+    def load_history(self, messages):
+        for msg in messages:
             self.append_message(msg["sender"], msg.get("text"), msg.get("image"), msg.get("favorite",0))
 
-    # -------- APPEND MESSAGE --------
+    # ---------------- APPEND MESSAGE ----------------
+    def append_message_from_signal(self, data):
+        self.append_message(data["sender"], data.get("text"), data.get("image"), data.get("favorite",0))
+
     def append_message(self, sender, text=None, image=None, favorite=0):
         cursor = self.messages.textCursor()
         cursor.movePosition(QTextCursor.End)
@@ -142,7 +191,7 @@ class MessengerV3(QWidget):
         if image:
             self.messages.append(f'{fav_mark}<b>{sender}:</b><br><img src="data:image/png;base64,{image}" width="200"/>')
 
-    # -------- SEND TEXT --------
+    # ---------------- SEND TEXT ----------------
     def send_message(self):
         if not self.current_chat:
             return
@@ -153,11 +202,10 @@ class MessengerV3(QWidget):
         sock.send(json.dumps(data).encode())
         self.append_message("Я", text)
         self.message.clear()
-        # добавляем чат в боковую панель если новый
         if self.current_chat not in [self.chat_list.item(i).text() for i in range(self.chat_list.count())]:
             self.chat_list.addItem(self.current_chat)
 
-    # -------- SEND IMAGE --------
+    # ---------------- SEND IMAGE ----------------
     def send_image(self):
         if not self.current_chat:
             return
@@ -171,27 +219,32 @@ class MessengerV3(QWidget):
             if self.current_chat not in [self.chat_list.item(i).text() for i in range(self.chat_list.count())]:
                 self.chat_list.addItem(self.current_chat)
 
-    # -------- SHOW FAVORITES --------
+    # ---------------- FAVORITES ----------------
     def show_favorites(self):
         data = {"type":"get_favorites"}
         sock.send(json.dumps(data).encode())
-        resp = json.loads(sock.recv(10000000).decode())
+        resp_bytes = bytearray()
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk: break
+            resp_bytes.extend(chunk)
+            if b'"messages"' in resp_bytes: break
+        resp = json.loads(resp_bytes.decode())
         self.messages.clear()
         self.chat_title.setText("Избранное")
         for msg in resp.get("messages",[]):
             self.append_message(msg["sender"], msg.get("text"), msg.get("image"), 1)
 
-    # -------- RECEIVE --------
+    # ---------------- RECEIVE ----------------
     def receive_messages(self):
         while True:
             try:
-                data = json.loads(sock.recv(10000000).decode())
+                data = json.loads(sock.recv(4096).decode())
                 sender = data.get("from")
-                # добавляем чат в боковую панель если новый
                 if sender != self.current_chat:
                     if sender not in [self.chat_list.item(i).text() for i in range(self.chat_list.count())]:
                         self.chat_list.addItem(sender)
-                self.append_message(sender, data.get("text"), data.get("image"), data.get("favorite",0))
+                self.receiver.new_message.emit(data)
             except:
                 break
 
