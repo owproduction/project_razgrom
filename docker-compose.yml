@@ -1,0 +1,9 @@
+version: "3"
+
+services:
+  razgrom_server:
+    build: .
+    container_name: razgrom_server
+    ports:
+      - "5555:5555"
+    restart: always
