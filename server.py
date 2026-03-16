@@ -5,7 +5,7 @@ import sqlite3
 import base64
 from datetime import datetime
 
-HOST = "192.168.133.20"
+HOST = "0.0.0.0"
 PORT = 5555
 
 # -------------------- БАЗА ДАННЫХ --------------------
