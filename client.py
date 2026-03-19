@@ -73,7 +73,9 @@ class Messenger(QWidget):
 
         layout = QHBoxLayout(self)
 
+        # левая панель
         left = QVBoxLayout()
+
         self.search = QLineEdit()
         self.search.setPlaceholderText("Поиск пользователя")
 
@@ -87,7 +89,9 @@ class Messenger(QWidget):
         left.addWidget(search_btn)
         left.addWidget(self.users)
 
+        # правая панель
         right = QVBoxLayout()
+
         self.chat = QTextBrowser()
         self.msg = QLineEdit()
 
@@ -109,6 +113,7 @@ class Messenger(QWidget):
 
         receiver.msg.connect(self.handle)
 
+    # -------- ОБРАБОТКА СЕРВЕРА --------
     def handle(self, data):
         if data["type"] == "login":
             if data["status"] == "ok":
@@ -139,25 +144,45 @@ class Messenger(QWidget):
 
         elif data["type"] == "search":
             if data["found"]:
-                self.users.addItem(data["username"])
+                # не дублируем
+                existing = [self.users.item(i).text() for i in range(self.users.count())]
+                if data["username"] not in existing:
+                    self.users.addItem(data["username"])
             else:
                 QMessageBox.warning(self,"Ошибка","Пользователь не найден")
 
+    # -------- ПОИСК --------
+    def search_user(self):
+        username = self.search.text().strip()
+
+        if not username:
+            return
+
+        sock.send((json.dumps({
+            "type": "search_user",
+            "username": username
+        }) + "\n").encode())
+
+    # -------- ОТКРЫТЬ ЧАТ --------
     def open_chat(self,item):
         self.current = item.text()
+
         sock.send((json.dumps({
             "type":"get_history",
             "with":self.current
         })+"\n").encode())
 
+    # -------- ОТПРАВКА --------
     def send_msg(self):
         if not self.current:
             return
+
         sock.send((json.dumps({
             "type":"message",
             "to":self.current,
             "text":self.msg.text()
         })+"\n").encode())
+
         self.msg.clear()
 
     def send_img(self):
@@ -175,6 +200,7 @@ class Messenger(QWidget):
                 "image":img
             })+"\n").encode())
 
+# ---------- LISTENER ----------
 def listen():
     buffer = ""
     while True:
@@ -194,6 +220,7 @@ def listen():
 
 threading.Thread(target=listen,daemon=True).start()
 
+# ---------- RUN ----------
 app = QApplication(sys.argv)
 login = Login()
 main = Messenger()

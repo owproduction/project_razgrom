@@ -31,22 +31,28 @@ def handle(client):
 
     while True:
         try:
-            data = client.recv(4096)
-            if not data:
-                break
+            raw = client.recv(4096)
 
-            buffer += data.decode()
+            if not raw:
+                continue
+
+            buffer += raw.decode(errors="ignore")
 
             while "\n" in buffer:
                 msg, buffer = buffer.split("\n", 1)
 
+                if not msg.strip():
+                    continue
+
                 try:
                     data = json.loads(msg)
                 except:
-                    continue
+                    continue  # <-- не падаем
+
+                t = data.get("type")
 
                 # -------- REGISTER --------
-                if data["type"] == "register":
+                if t == "register":
                     cursor.execute("SELECT * FROM users WHERE username=?", (data["username"],))
                     if cursor.fetchone():
                         send(client, {"type":"register","status":"fail"})
@@ -56,7 +62,7 @@ def handle(client):
                         send(client, {"type":"register","status":"ok"})
 
                 # -------- LOGIN --------
-                elif data["type"] == "login":
+                elif t == "login":
                     cursor.execute("SELECT * FROM users WHERE username=? AND password=?",
                                    (data["username"],data["password"]))
                     if cursor.fetchone():
@@ -67,7 +73,10 @@ def handle(client):
                         send(client, {"type":"login","status":"fail"})
 
                 # -------- MESSAGE --------
-                elif data["type"] == "message":
+                elif t == "message":
+                    if not username:
+                        continue
+
                     cursor.execute("INSERT INTO messages VALUES(?,?,?,?)",
                                    (username,data["to"],data["text"],None))
                     conn.commit()
@@ -80,7 +89,10 @@ def handle(client):
                         })
 
                 # -------- IMAGE --------
-                elif data["type"] == "image":
+                elif t == "image":
+                    if not username:
+                        continue
+
                     cursor.execute("INSERT INTO messages VALUES(?,?,?,?)",
                                    (username,data["to"],None,data["image"]))
                     conn.commit()
@@ -93,7 +105,7 @@ def handle(client):
                         })
 
                 # -------- HISTORY --------
-                elif data["type"] == "get_history":
+                elif t == "get_history":
                     cursor.execute("""
                     SELECT sender,text,image FROM messages
                     WHERE (sender=? AND receiver=?) OR (sender=? AND receiver=?)
@@ -110,7 +122,7 @@ def handle(client):
                     send(client, {"type":"history","messages":msgs})
 
                 # -------- SEARCH --------
-                elif data["type"] == "search_user":
+                elif t == "search_user":
                     cursor.execute("SELECT username FROM users WHERE username=?", (data["username"],))
                     send(client, {
                         "type":"search",
@@ -118,7 +130,8 @@ def handle(client):
                         "username": data["username"]
                     })
 
-        except:
+        except Exception as e:
+            print("ERROR:", e)
             break
 
     if username in clients:
