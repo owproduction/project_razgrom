@@ -1,255 +1,152 @@
-import socket
-import sys
-import json
-import base64
-import threading
-from datetime import datetime
-
+import socket, sys, json, base64
 from PySide6.QtWidgets import *
-from PySide6.QtGui import QTextCursor
-from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer
+from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt
 
 SERVER = "192.168.133.20"
 PORT = 5555
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock = socket.socket()
 sock.connect((SERVER, PORT))
 
-STYLE = """
-QWidget{background:#0f0f0f;color:white;font-size:14px;}
-QLineEdit{background:#1e1e1e;border:1px solid #333;padding:6px;}
-QPushButton{background:#aa0000;border:none;padding:8px;}
-QListWidget{background:#151515;border:none;}
-QTextBrowser{background:#121212;border:none;}
-"""
-
-WELCOME_TEXT = "❝ «Проект Разгром» спасет мир. Наступит ледниковый период для культуры. Искусственно вызванные темные века. «Проект Разгром» вынудит человечество погрузиться в спячку и ограничить свои аппетиты на время, необходимое Земле для восстановления ресурсов. ❞"
-
-# ---------------- SIGNALS ----------------
-class Receiver(QObject):
-    new_message = Signal(dict)  # {"sender":..., "text":..., "image":..., "favorite":...}
-
-# ---------------- LOGIN ----------------
-class Login(QWidget):
+class Messenger(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Проект Разгром v4")
-        self.resize(300,200)
-        self.setStyleSheet(STYLE)
-        layout = QVBoxLayout()
-        self.user = QLineEdit()
-        self.user.setPlaceholderText("Ник")
-        self.password = QLineEdit()
-        self.password.setPlaceholderText("Пароль")
-        self.password.setEchoMode(QLineEdit.Password)
-        login_btn = QPushButton("Войти")
-        reg_btn = QPushButton("Регистрация")
-        login_btn.clicked.connect(self.login)
-        reg_btn.clicked.connect(self.register)
-        layout.addWidget(self.user)
-        layout.addWidget(self.password)
-        layout.addWidget(login_btn)
-        layout.addWidget(reg_btn)
-        self.setLayout(layout)
-
-    def login(self):
-        data = {"type":"login","username":self.user.text(),"password":self.password.text()}
-        sock.send(json.dumps(data).encode())
-        resp = json.loads(sock.recv(1024).decode())
-        if resp["status"]=="ok":
-            self.chat = MessengerV4(self.user.text())
-            self.chat.show()
-            self.close()
-        else:
-            QMessageBox.warning(self,"Ошибка","Неверный логин")
-
-    def register(self):
-        data = {"type":"register","username":self.user.text(),"password":self.password.text()}
-        sock.send(json.dumps(data).encode())
-        resp = json.loads(sock.recv(1024).decode())
-        if resp["status"]=="ok":
-            QMessageBox.information(self,"OK","Аккаунт создан")
-        else:
-            QMessageBox.warning(self,"Ошибка","Ник занят")
-
-# ---------------- HISTORY THREAD ----------------
-class HistoryWorker(QThread):
-    finished = Signal(list)
-
-    def __init__(self, sock, user, peer):
-        super().__init__()
-        self.sock = sock
-        self.user = user
-        self.peer = peer
-
-    def run(self):
-        try:
-            data = {"type":"get_history","with":self.peer}
-            self.sock.send(json.dumps(data).encode())
-            resp_bytes = bytearray()
-            while True:
-                chunk = self.sock.recv(4096)
-                if not chunk: break
-                resp_bytes.extend(chunk)
-                if b'"messages"' in resp_bytes:  # простой маркер конца
-                    break
-            resp = json.loads(resp_bytes.decode())
-            self.finished.emit(resp.get("messages",[]))
-        except:
-            self.finished.emit([])
-
-# ---------------- MAIN MESSENGER ----------------
-class MessengerV4(QWidget):
-    def __init__(self, username):
-        super().__init__()
-        self.username = username
-        self.setWindowTitle("Проект Разгром v4")
-        self.resize(1000,600)
-        self.setStyleSheet(STYLE)
+        self.setWindowTitle("Проект Разгром")
+        self.resize(900,600)
 
         layout = QHBoxLayout(self)
 
-        # LEFT PANEL
-        left = QVBoxLayout()
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Найти пользователя")
-        self.search_btn = QPushButton("Поиск")
-        self.search_btn.clicked.connect(self.search_user)
-        self.chat_list = QListWidget()
-        self.chat_list.itemClicked.connect(self.select_chat)
-        self.favorite_btn = QPushButton("Избранное")
-        self.favorite_btn.clicked.connect(self.show_favorites)
-        left.addWidget(self.search)
-        left.addWidget(self.search_btn)
-        left.addWidget(self.chat_list)
-        left.addWidget(self.favorite_btn)
+        self.users = QListWidget()
+        self.users.itemClicked.connect(self.open_chat)
 
-        # RIGHT PANEL
         right = QVBoxLayout()
-        self.chat_title = QLabel("Чат")
-        self.messages = QTextBrowser()
-        self.message = QLineEdit()
-        self.message.setPlaceholderText("Введите сообщение")
-        self.send_btn = QPushButton("Отправить")
-        self.send_btn.clicked.connect(self.send_message)
-        self.img_btn = QPushButton("Фото")
-        self.img_btn.clicked.connect(self.send_image)
-        right.addWidget(self.chat_title)
-        right.addWidget(self.messages)
-        right.addWidget(self.message)
-        right.addWidget(self.send_btn)
-        right.addWidget(self.img_btn)
+        self.chat = QTextBrowser()
 
-        layout.addLayout(left,1)
-        layout.addLayout(right,3)
+        self.input = QLineEdit()
 
-        self.current_chat = None
+        send = QPushButton("Отправить")
+        send.clicked.connect(self.send_text)
 
-        # Сигнал для безопасного обновления GUI
-        self.receiver = Receiver()
-        self.receiver.new_message.connect(self.append_message_from_signal)
+        img = QPushButton("Фото")
+        img.clicked.connect(self.send_image)
 
-        # поток для постоянного получения сообщений
-        threading.Thread(target=self.receive_messages, daemon=True).start()
+        file = QPushButton("Файл")
+        file.clicked.connect(self.send_file)
 
-        # приветственное сообщение
-        self.messages.append(f"<i>{WELCOME_TEXT}</i>")
+        right.addWidget(self.chat)
+        right.addWidget(self.input)
+        right.addWidget(send)
+        right.addWidget(img)
+        right.addWidget(file)
 
-    # ---------------- SEARCH ----------------
-    def search_user(self):
-        username = self.search.text()
-        if username=="":
-            return
-        if username not in [self.chat_list.item(i).text() for i in range(self.chat_list.count())]:
-            self.chat_list.addItem(username)
+        layout.addWidget(self.users)
+        layout.addLayout(right)
 
-    # ---------------- SELECT CHAT ----------------
-    def select_chat(self, item):
-        self.current_chat = item.text()
-        self.chat_title.setText("Чат с " + self.current_chat)
-        self.messages.clear()
+        self.current = None
 
-        # запуск потока для истории
-        self.hist_worker = HistoryWorker(sock, self.username, self.current_chat)
-        self.hist_worker.finished.connect(self.load_history)
-        self.hist_worker.start()
+    # ---------- ОТКРЫТИЕ ЧАТА ----------
+    def open_chat(self, item):
+        self.current = item.text()
+        self.chat.clear()
 
-    def load_history(self, messages):
-        for msg in messages:
-            self.append_message(msg["sender"], msg.get("text"), msg.get("image"), msg.get("favorite",0))
+        sock.send(json.dumps({"type":"get_history","with":self.current}).encode())
+        resp = json.loads(sock.recv(1000000).decode())
 
-    # ---------------- APPEND MESSAGE ----------------
-    def append_message_from_signal(self, data):
-        self.append_message(data["sender"], data.get("text"), data.get("image"), data.get("favorite",0))
+        for m in resp["messages"]:
+            self.show_msg(m)
 
-    def append_message(self, sender, text=None, image=None, favorite=0):
-        cursor = self.messages.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        fav_mark = "⭐ " if favorite else ""
-        if text:
-            self.messages.append(f"{fav_mark}<b>{sender}:</b> {text}")
-        if image:
-            self.messages.append(f'{fav_mark}<b>{sender}:</b><br><img src="data:image/png;base64,{image}" width="200"/>')
+    # ---------- ВЫВОД ----------
+    def show_msg(self, m):
+        sender = m["sender"]
 
-    # ---------------- SEND TEXT ----------------
-    def send_message(self):
-        if not self.current_chat:
-            return
-        text = self.message.text()
-        if text=="":
-            return
-        data = {"type":"message","to":self.current_chat,"text":text}
-        sock.send(json.dumps(data).encode())
-        self.append_message("Я", text)
-        self.message.clear()
-        if self.current_chat not in [self.chat_list.item(i).text() for i in range(self.chat_list.count())]:
-            self.chat_list.addItem(self.current_chat)
+        if m.get("text"):
+            self.chat.append(f"<b>{sender}:</b> {m['text']}")
 
-    # ---------------- SEND IMAGE ----------------
+        if m.get("image"):
+            self.chat.append(f"""
+<b>{sender}:</b><br>
+<a href="img://{m['image']}">
+<img src="data:image/png;base64,{m['image']}" width="200">
+</a>
+""")
+
+        if m.get("file"):
+            self.chat.append(f"""
+<b>{sender}:</b>
+<a href="file://{m['filename']}::{m['file']}">
+📁 {m['filename']}
+</a>
+""")
+
+    # ---------- КЛИК ПО ССЫЛКЕ ----------
+    def mousePressEvent(self, event):
+        cursor = self.chat.cursorForPosition(event.pos())
+        href = cursor.charFormat().anchorHref()
+
+        if href.startswith("img://"):
+            img_data = href.replace("img://","")
+            self.open_image(img_data)
+
+        if href.startswith("file://"):
+            name,data = href.replace("file://","").split("::")
+            self.save_file(name,data)
+
+    # ---------- УВЕЛИЧЕНИЕ КАРТИНКИ ----------
+    def open_image(self, img_data):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Фото")
+        layout = QVBoxLayout(dlg)
+
+        pix = QPixmap()
+        pix.loadFromData(base64.b64decode(img_data))
+
+        lbl = QLabel()
+        lbl.setPixmap(pix.scaled(800,600,Qt.KeepAspectRatio))
+
+        btn = QPushButton("Скачать")
+        btn.clicked.connect(lambda: self.save_file("image.png", img_data))
+
+        layout.addWidget(lbl)
+        layout.addWidget(btn)
+
+        dlg.exec()
+
+    # ---------- СОХРАНЕНИЕ ----------
+    def save_file(self, name, data):
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить", name)
+        if path:
+            with open(path,"wb") as f:
+                f.write(base64.b64decode(data))
+
+    # ---------- ОТПРАВКА ----------
+    def send_text(self):
+        text = self.input.text()
+        sock.send(json.dumps({"type":"message","to":self.current,"text":text}).encode())
+        self.input.clear()
+
     def send_image(self):
-        if not self.current_chat:
-            return
-        file = QFileDialog.getOpenFileName(self,"Выберите фото","","Images (*.png *.jpg *.jpeg)")
-        if file[0]:
-            with open(file[0],"rb") as f:
-                img = base64.b64encode(f.read()).decode()
-            data = {"type":"image","to":self.current_chat,"image":img}
-            sock.send(json.dumps(data).encode())
-            self.append_message("Я", image=img)
-            if self.current_chat not in [self.chat_list.item(i).text() for i in range(self.chat_list.count())]:
-                self.chat_list.addItem(self.current_chat)
+        file,_ = QFileDialog.getOpenFileName(self,"Фото","","Images (*.png *.jpg)")
+        if file:
+            with open(file,"rb") as f:
+                data = base64.b64encode(f.read()).decode()
+            sock.send(json.dumps({"type":"image","to":self.current,"image":data}).encode())
 
-    # ---------------- FAVORITES ----------------
-    def show_favorites(self):
-        data = {"type":"get_favorites"}
-        sock.send(json.dumps(data).encode())
-        resp_bytes = bytearray()
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk: break
-            resp_bytes.extend(chunk)
-            if b'"messages"' in resp_bytes: break
-        resp = json.loads(resp_bytes.decode())
-        self.messages.clear()
-        self.chat_title.setText("Избранное")
-        for msg in resp.get("messages",[]):
-            self.append_message(msg["sender"], msg.get("text"), msg.get("image"), 1)
+    def send_file(self):
+        file,_ = QFileDialog.getOpenFileName(self,"Файл","")
+        if file:
+            with open(file,"rb") as f:
+                data = base64.b64encode(f.read()).decode()
+            name = file.split("/")[-1]
+            sock.send(json.dumps({
+                "type":"file",
+                "to":self.current,
+                "file":data,
+                "filename":name
+            }).encode())
 
-    # ---------------- RECEIVE ----------------
-    def receive_messages(self):
-        while True:
-            try:
-                data = json.loads(sock.recv(4096).decode())
-                sender = data.get("from")
-                if sender != self.current_chat:
-                    if sender not in [self.chat_list.item(i).text() for i in range(self.chat_list.count())]:
-                        self.chat_list.addItem(sender)
-                self.receiver.new_message.emit(data)
-            except:
-                break
-
-# ---------------- RUN ----------------
+# ---------- RUN ----------
 app = QApplication(sys.argv)
-window = Login()
-window.show()
+w = Messenger()
+w.show()
 sys.exit(app.exec())
