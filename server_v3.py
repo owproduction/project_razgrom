@@ -6,10 +6,13 @@ PORT = 5555
 conn = sqlite3.connect("chat.db", check_same_thread=False)
 cursor = conn.cursor()
 
-cursor.execute("CREATE TABLE IF NOT EXISTS users(username TEXT, password TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS users(username TEXT PRIMARY KEY, password TEXT)")
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS messages(
-sender TEXT, receiver TEXT, text TEXT, image TEXT
+    sender TEXT,
+    receiver TEXT,
+    text TEXT,
+    image TEXT
 )
 """)
 conn.commit()
@@ -36,8 +39,13 @@ def handle(client):
 
             while "\n" in buffer:
                 msg, buffer = buffer.split("\n", 1)
-                data = json.loads(msg)
 
+                try:
+                    data = json.loads(msg)
+                except:
+                    continue
+
+                # -------- REGISTER --------
                 if data["type"] == "register":
                     cursor.execute("SELECT * FROM users WHERE username=?", (data["username"],))
                     if cursor.fetchone():
@@ -47,6 +55,7 @@ def handle(client):
                         conn.commit()
                         send(client, {"type":"register","status":"ok"})
 
+                # -------- LOGIN --------
                 elif data["type"] == "login":
                     cursor.execute("SELECT * FROM users WHERE username=? AND password=?",
                                    (data["username"],data["password"]))
@@ -57,6 +66,7 @@ def handle(client):
                     else:
                         send(client, {"type":"login","status":"fail"})
 
+                # -------- MESSAGE --------
                 elif data["type"] == "message":
                     cursor.execute("INSERT INTO messages VALUES(?,?,?,?)",
                                    (username,data["to"],data["text"],None))
@@ -69,6 +79,7 @@ def handle(client):
                             "text":data["text"]
                         })
 
+                # -------- IMAGE --------
                 elif data["type"] == "image":
                     cursor.execute("INSERT INTO messages VALUES(?,?,?,?)",
                                    (username,data["to"],None,data["image"]))
@@ -81,6 +92,7 @@ def handle(client):
                             "image":data["image"]
                         })
 
+                # -------- HISTORY --------
                 elif data["type"] == "get_history":
                     cursor.execute("""
                     SELECT sender,text,image FROM messages
@@ -97,6 +109,7 @@ def handle(client):
 
                     send(client, {"type":"history","messages":msgs})
 
+                # -------- SEARCH --------
                 elif data["type"] == "search_user":
                     cursor.execute("SELECT username FROM users WHERE username=?", (data["username"],))
                     send(client, {
@@ -110,6 +123,7 @@ def handle(client):
 
     if username in clients:
         del clients[username]
+
     client.close()
 
 server = socket.socket()
