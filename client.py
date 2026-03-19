@@ -1,7 +1,6 @@
-import socket, sys, json, base64
+import socket, sys, json, base64, threading
 from PySide6.QtWidgets import *
-from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Signal, QObject
 
 SERVER = "192.168.133.20"
 PORT = 5555
@@ -9,6 +8,38 @@ PORT = 5555
 sock = socket.socket()
 sock.connect((SERVER, PORT))
 
+class Receiver(QObject):
+    msg = Signal(dict)
+
+receiver = Receiver()
+
+# ---------- LOGIN ----------
+class Login(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Проект Разгром")
+        self.resize(300,200)
+
+        layout = QVBoxLayout(self)
+
+        self.u = QLineEdit()
+        self.p = QLineEdit()
+
+        btn = QPushButton("Войти")
+        btn.clicked.connect(self.login)
+
+        layout.addWidget(self.u)
+        layout.addWidget(self.p)
+        layout.addWidget(btn)
+
+    def login(self):
+        sock.send((json.dumps({
+            "type":"login",
+            "username":self.u.text(),
+            "password":self.p.text()
+        })+"\n").encode())
+
+# ---------- MAIN ----------
 class Messenger(QWidget):
     def __init__(self):
         super().__init__()
@@ -22,131 +53,88 @@ class Messenger(QWidget):
 
         right = QVBoxLayout()
         self.chat = QTextBrowser()
-
-        self.input = QLineEdit()
+        self.msg = QLineEdit()
 
         send = QPushButton("Отправить")
-        send.clicked.connect(self.send_text)
-
-        img = QPushButton("Фото")
-        img.clicked.connect(self.send_image)
-
-        file = QPushButton("Файл")
-        file.clicked.connect(self.send_file)
+        send.clicked.connect(self.send_msg)
 
         right.addWidget(self.chat)
-        right.addWidget(self.input)
+        right.addWidget(self.msg)
         right.addWidget(send)
-        right.addWidget(img)
-        right.addWidget(file)
 
         layout.addWidget(self.users)
         layout.addLayout(right)
 
         self.current = None
 
-    # ---------- ОТКРЫТИЕ ЧАТА ----------
-    def open_chat(self, item):
+        receiver.msg.connect(self.handle)
+
+    def handle(self, data):
+        if data["type"] == "login":
+            if data["status"] == "ok":
+                self.show()
+            else:
+                QMessageBox.warning(self,"Ошибка","Логин неверный")
+
+        elif data["type"] == "message":
+            self.chat.append(f"{data['sender']}: {data['text']}")
+
+        elif data["type"] == "image":
+            self.chat.append(f"<b>{data['sender']}:</b><br><img src='data:image/png;base64,{data['image']}' width='200'>")
+
+        elif data["type"] == "history":
+            self.chat.clear()
+            for m in data["messages"]:
+                if m["text"]:
+                    self.chat.append(f"{m['sender']}: {m['text']}")
+                if m["image"]:
+                    self.chat.append(f"<img src='data:image/png;base64,{m['image']}' width='200'>")
+
+        elif data["type"] == "search":
+            if data["found"]:
+                self.users.addItem(data["username"])
+            else:
+                QMessageBox.warning(self,"Ошибка","Нет пользователя")
+
+    def open_chat(self,item):
         self.current = item.text()
-        self.chat.clear()
 
-        sock.send(json.dumps({"type":"get_history","with":self.current}).encode())
-        resp = json.loads(sock.recv(1000000).decode())
+        sock.send((json.dumps({
+            "type":"get_history",
+            "with":self.current
+        })+"\n").encode())
 
-        for m in resp["messages"]:
-            self.show_msg(m)
+    def send_msg(self):
+        sock.send((json.dumps({
+            "type":"message",
+            "to":self.current,
+            "text":self.msg.text()
+        })+"\n").encode())
+        self.msg.clear()
 
-    # ---------- ВЫВОД ----------
-    def show_msg(self, m):
-        sender = m["sender"]
+# ---------- LISTENER ----------
+def listen():
+    buffer = ""
+    while True:
+        try:
+            data = sock.recv(4096)
+            if not data:
+                continue
 
-        if m.get("text"):
-            self.chat.append(f"<b>{sender}:</b> {m['text']}")
+            buffer += data.decode()
 
-        if m.get("image"):
-            self.chat.append(f"""
-<b>{sender}:</b><br>
-<a href="img://{m['image']}">
-<img src="data:image/png;base64,{m['image']}" width="200">
-</a>
-""")
+            while "\n" in buffer:
+                msg, buffer = buffer.split("\n",1)
+                receiver.msg.emit(json.loads(msg))
 
-        if m.get("file"):
-            self.chat.append(f"""
-<b>{sender}:</b>
-<a href="file://{m['filename']}::{m['file']}">
-📁 {m['filename']}
-</a>
-""")
+        except:
+            break
 
-    # ---------- КЛИК ПО ССЫЛКЕ ----------
-    def mousePressEvent(self, event):
-        cursor = self.chat.cursorForPosition(event.pos())
-        href = cursor.charFormat().anchorHref()
-
-        if href.startswith("img://"):
-            img_data = href.replace("img://","")
-            self.open_image(img_data)
-
-        if href.startswith("file://"):
-            name,data = href.replace("file://","").split("::")
-            self.save_file(name,data)
-
-    # ---------- УВЕЛИЧЕНИЕ КАРТИНКИ ----------
-    def open_image(self, img_data):
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Фото")
-        layout = QVBoxLayout(dlg)
-
-        pix = QPixmap()
-        pix.loadFromData(base64.b64decode(img_data))
-
-        lbl = QLabel()
-        lbl.setPixmap(pix.scaled(800,600,Qt.KeepAspectRatio))
-
-        btn = QPushButton("Скачать")
-        btn.clicked.connect(lambda: self.save_file("image.png", img_data))
-
-        layout.addWidget(lbl)
-        layout.addWidget(btn)
-
-        dlg.exec()
-
-    # ---------- СОХРАНЕНИЕ ----------
-    def save_file(self, name, data):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить", name)
-        if path:
-            with open(path,"wb") as f:
-                f.write(base64.b64decode(data))
-
-    # ---------- ОТПРАВКА ----------
-    def send_text(self):
-        text = self.input.text()
-        sock.send(json.dumps({"type":"message","to":self.current,"text":text}).encode())
-        self.input.clear()
-
-    def send_image(self):
-        file,_ = QFileDialog.getOpenFileName(self,"Фото","","Images (*.png *.jpg)")
-        if file:
-            with open(file,"rb") as f:
-                data = base64.b64encode(f.read()).decode()
-            sock.send(json.dumps({"type":"image","to":self.current,"image":data}).encode())
-
-    def send_file(self):
-        file,_ = QFileDialog.getOpenFileName(self,"Файл","")
-        if file:
-            with open(file,"rb") as f:
-                data = base64.b64encode(f.read()).decode()
-            name = file.split("/")[-1]
-            sock.send(json.dumps({
-                "type":"file",
-                "to":self.current,
-                "file":data,
-                "filename":name
-            }).encode())
+threading.Thread(target=listen,daemon=True).start()
 
 # ---------- RUN ----------
 app = QApplication(sys.argv)
-w = Messenger()
-w.show()
+login = Login()
+main = Messenger()
+login.show()
 sys.exit(app.exec())
